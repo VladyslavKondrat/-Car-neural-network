@@ -2,8 +2,8 @@ import numpy as np
 from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.base_env import ActionTuple
 
-from agent.rl_agent import
-from utils.logger import
+from agent.rl_agent import HybridAgent 
+from utils.logger import TensorboardLogger
 
 
 def main():
