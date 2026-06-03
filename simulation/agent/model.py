@@ -1,17 +1,11 @@
 import torch
 import torch.nn as nn
+from torch.distributions import Normal, Categorical
 
 class SelfDrivingBrain(nn.Module):
-    """
-    The main Actor network. 
-    Input: Array of sensor beams.
-    Outputs: Throttle [-1, 1], Steering [-1, 1], and Brake [True/False].
-    """
     def __init__(self, num_beams):
         super(SelfDrivingBrain, self).__init__()
         
-        # 1. The Shared Body
-        # Extracts spatial features from the raw raycast distances.
         self.shared_layers = nn.Sequential(
             nn.Linear(num_beams, 128),
             nn.ReLU(),
@@ -19,54 +13,66 @@ class SelfDrivingBrain(nn.Module):
             nn.ReLU()
         )
         
-        # 2. Head A: Continuous Actions (Throttle & Steering)
-        # Tanh mathematically bounds the output exactly between -1.0 and 1.0.
+        # ACTOR HEADS
         self.continuous_head = nn.Sequential(
             nn.Linear(64, 2),
             nn.Tanh()         
         )
-        
-        # 3. Head B: Discrete Action (Brake)
-        # Sigmoid bounds the output between 0.0 and 1.0 (acting as a probability).
         self.discrete_head = nn.Sequential(
             nn.Linear(64, 1),
             nn.Sigmoid()
         )
+        
+        # CRITIC HEAD (New for PPO)
+        self.value_head = nn.Linear(64, 1)
+        
+        # STANDARD DEVIATION (New for PPO)
+        self.continuous_std = nn.Parameter(torch.zeros(2)) 
 
     def forward(self, x):
-        # Pass input through the shared feature extractor
         features = self.shared_layers(x)
         
-        # Split the features into the two separate heads
-        cont_actions = self.continuous_head(features) # [throttle, steering]
-        brake_prob = self.discrete_head(features)     # [brake_chance]
+        # Actor
+        action_means = self.continuous_head(features)
+        brake_prob = self.discrete_head(features)
         
-        # Convert the probability (0.0 to 1.0) into a strict boolean format (0 or 1)
-        brake_bool = (brake_prob > 0.5).float() 
+        # Critic
+        state_value = self.value_head(features)
         
-        return cont_actions, brake_bool
+        # Now it properly returns 3 things!
+        return action_means, brake_prob, state_value
+
+    def get_action_and_log_prob(self, state_tensor):
+        """Creates probability distributions and samples actions from them."""
+        # This will now successfully unpack 3 values
+        action_means, brake_prob, state_value = self.forward(state_tensor)
+        
+        # 1. Continuous Distribution (Throttle, Steering)
+        action_std = torch.exp(self.continuous_std) 
+        continuous_dist = Normal(action_means, action_std)
+        cont_actions = continuous_dist.sample()
+        cont_log_probs = continuous_dist.log_prob(cont_actions).sum(dim=-1)
+        
+        # 2. Discrete Distribution (Brake)
+        discrete_dist = Categorical(probs=torch.cat([1-brake_prob, brake_prob], dim=-1))
+        brake_action = discrete_dist.sample() 
+        brake_log_prob = discrete_dist.log_prob(brake_action)
+        
+        # Total log probability
+        total_log_prob = cont_log_probs + brake_log_prob
+        
+        return cont_actions, brake_action, total_log_prob, state_value
 
 
 class ForwardDynamicsModel(nn.Module):
-    """
-    The Unsupervised (Self-Supervised) network.
-    Input: Current sensor beams + The actions the car just took.
-    Output: Prediction of what the next sensor beams will look like.
-    """
+    """The Unsupervised (Self-Supervised) network."""
     def __init__(self, input_size, output_size):
-        # input_size = num_beams + 3 (throttle, steering, brake)
-        # output_size = num_beams
         super(ForwardDynamicsModel, self).__init__()
-        
         self.network = nn.Sequential(
-            nn.Linear(input_size, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
+            nn.Linear(input_size, 128), nn.ReLU(),
+            nn.Linear(128, 128), nn.ReLU(),
             nn.Linear(128, output_size)
         )
 
     def forward(self, x):
-        # x is the concatenated tensor of [current_beams, throttle, steering, brake]
-        # It outputs a raw array of floats predicting the physics of the walls.
         return self.network(x)
