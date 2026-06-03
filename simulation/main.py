@@ -28,7 +28,6 @@ def main():
         is_crashed = bool(raw_state[-1]) 
         
         while not done:
-            # --- CHANGE 1: UNPACK LOG PROBABILITIES AND VALUES ---
             throttle, steering, brake_bool, log_prob, value = agent.select_action(sensor_beams)
             
             # Format actions for Unity C#
@@ -51,24 +50,18 @@ def main():
             elif done_from_unity:
                 done = True
                 
-            # --- CHANGE 2: NEW STORAGE FORMAT ---
-            # We must pass the log_prob and value into memory.
-            # Note: We group the actions into a single array/tuple to match the loss math.
+            
             action_data = [throttle, steering, 1.0 if brake_bool else 0.0]
             agent.store_memory(sensor_beams, action_data, log_prob, reward, value, done)
             
-            # (Note: agent.train_step() is REMOVED from here. No per-frame training!)
             
             sensor_beams = next_sensor_beams
             episode_reward += reward
 
-        # --- CHANGE 3: TRAIN AT THE END OF THE EPISODE ---
-        # Now that the car has finished its run or crashed, we pass the entire
-        # trajectory data to PPO to calculate rewards and optimize weights.
         print(f"Episode {episode} finished. Updating weights...")
         agent.train_step() 
         
-        # Log and save progress
+        #Log and save progress
         print(f"Episode {episode} | Total Reward: {episode_reward}")
         logger.log(episode, episode_reward, agent.get_losses())
         
